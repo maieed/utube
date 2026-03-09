@@ -8,6 +8,17 @@ const MAX_VIDEOS = 500;
 
 const normalizeChatHandle = (value) => String(value || "").trim().replace(/^@/, "").toLowerCase();
 const isNumericLike = (value) => /^-?\d+$/.test(String(value || "").trim());
+const stripWrappingQuotes = (value) => String(value || "").trim().replace(/^['"]|['"]$/g, "");
+const parseChatReference = (value) => {
+  const raw = stripWrappingQuotes(value);
+  if (!raw) return "";
+  const urlMatch = raw.match(/^https?:\/\/t\.me\/(.+)$/i);
+  if (urlMatch) {
+    const segment = urlMatch[1].split(/[/?#]/)[0];
+    return segment ? `@${segment}` : "";
+  }
+  return raw;
+};
 
 const DEMO_VIDEOS = [
   {
@@ -67,8 +78,8 @@ const fileNameToTitle = (fileName) => {
 
 class TelegramCatalogService {
   constructor({ token, chatId, catalogPath }) {
-    this.token = String(token || "").trim();
-    this.chatIdRaw = String(chatId || "").trim();
+    this.token = stripWrappingQuotes(token);
+    this.chatIdRaw = parseChatReference(chatId);
     this.chatId = this.chatIdRaw;
     this.chatHandle = normalizeChatHandle(this.chatIdRaw);
     this.expectedChatId = isNumericLike(this.chatIdRaw) ? this.chatIdRaw : "";
@@ -82,6 +93,7 @@ class TelegramCatalogService {
     };
     this.lastSyncError = null;
     this.lastUpdatesCount = 0;
+    this.recentChats = [];
     this.ready = false;
     this.syncPromise = null;
   }
@@ -177,6 +189,7 @@ class TelegramCatalogService {
       totalVideos: this.catalog.videos.length,
       lastSyncedAt: this.catalog.lastSyncedAt,
       lastSyncError: this.lastSyncError,
+      recentChats: this.recentChats,
       reminder: this.isConfigured()
         ? "Only posts sent after bot addition are available via Bot API getUpdates."
         : null
@@ -206,6 +219,7 @@ class TelegramCatalogService {
       for (const update of updates) {
         const message = this.#extractMessage(update);
         if (!message?.chat?.id) continue;
+        this.#rememberChat(message.chat);
         if (!this.#isExpectedChat(message.chat)) continue;
 
         const media = this.#extractMedia(message);
@@ -248,6 +262,20 @@ class TelegramCatalogService {
     }
 
     return false;
+  }
+
+  #rememberChat(chat) {
+    const entry = {
+      id: String(chat?.id || ""),
+      title: chat?.title || chat?.first_name || "",
+      username: chat?.username ? `@${normalizeChatHandle(chat.username)}` : null,
+      type: chat?.type || "unknown"
+    };
+
+    const key = `${entry.id}|${entry.username || ""}`;
+    const map = new Map(this.recentChats.map((item) => [`${item.id}|${item.username || ""}`, item]));
+    map.set(key, entry);
+    this.recentChats = Array.from(map.values()).slice(-20);
   }
 
   async #disableWebhookMode() {

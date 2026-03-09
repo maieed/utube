@@ -107,6 +107,8 @@ After frontend deploy, update backend `ALLOWED_ORIGINS` to your exact static-sit
    - `configured` is `true`
    - `lastSyncError` is `null`
    - `resolvedChatId` is set
+   - `recentChats` contains your target channel/group id
    - `totalVideos` is greater than `0` after posting a new video
 3. If `totalVideos` stays `0`, post a brand new video in channel and call `POST /api/videos/sync`.
 4. If `lastSyncError` mentions webhook conflict, redeploy backend (code now auto-disables webhook mode for polling).
+5. If your channel appears in `recentChats` but ids differ from your `TELEGRAM_CHAT_ID`, replace env with that exact `id` and redeploy.
