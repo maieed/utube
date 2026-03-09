@@ -6,6 +6,9 @@ const { formatDuration, formatNumberShort, formatTimeAgo } = require("../utils/f
 const TELEGRAM_API_BASE = "https://api.telegram.org";
 const MAX_VIDEOS = 500;
 
+const normalizeChatHandle = (value) => String(value || "").trim().replace(/^@/, "").toLowerCase();
+const isNumericLike = (value) => /^-?\d+$/.test(String(value || "").trim());
+
 const DEMO_VIDEOS = [
   {
     id: "demo-1",
@@ -65,7 +68,11 @@ const fileNameToTitle = (fileName) => {
 class TelegramCatalogService {
   constructor({ token, chatId, catalogPath }) {
     this.token = String(token || "").trim();
-    this.chatId = String(chatId || "").trim();
+    this.chatIdRaw = String(chatId || "").trim();
+    this.chatId = this.chatIdRaw;
+    this.chatHandle = normalizeChatHandle(this.chatIdRaw);
+    this.expectedChatId = isNumericLike(this.chatIdRaw) ? this.chatIdRaw : "";
+    this.resolvedChatId = null;
     this.catalogPath = catalogPath;
     this.filePathCache = new Map();
     this.catalog = {
@@ -73,6 +80,8 @@ class TelegramCatalogService {
       lastSyncedAt: null,
       videos: []
     };
+    this.lastSyncError = null;
+    this.lastUpdatesCount = 0;
     this.ready = false;
     this.syncPromise = null;
   }
@@ -85,6 +94,8 @@ class TelegramCatalogService {
     await this.#loadCatalog();
     this.ready = true;
     if (this.isConfigured()) {
+      await this.#disableWebhookMode();
+      await this.#resolveExpectedChatId();
       await this.syncNow();
     }
   }
@@ -93,9 +104,17 @@ class TelegramCatalogService {
     if (!this.isConfigured()) return;
     if (this.syncPromise) return this.syncPromise;
 
-    this.syncPromise = this.#syncInternal().finally(() => {
-      this.syncPromise = null;
-    });
+    this.syncPromise = this.#syncInternal()
+      .then(() => {
+        this.lastSyncError = null;
+      })
+      .catch((error) => {
+        this.lastSyncError = error.message || "Unknown sync error";
+        throw error;
+      })
+      .finally(() => {
+        this.syncPromise = null;
+      });
     return this.syncPromise;
   }
 
@@ -150,9 +169,17 @@ class TelegramCatalogService {
   metadata() {
     return {
       configured: this.isConfigured(),
-      chatId: this.chatId || null,
+      chatId: this.chatIdRaw || null,
+      resolvedChatId: this.resolvedChatId,
+      chatHandle: this.chatHandle || null,
+      lastUpdateId: this.catalog.lastUpdateId,
+      lastUpdatesCount: this.lastUpdatesCount,
       totalVideos: this.catalog.videos.length,
-      lastSyncedAt: this.catalog.lastSyncedAt
+      lastSyncedAt: this.catalog.lastSyncedAt,
+      lastSyncError: this.lastSyncError,
+      reminder: this.isConfigured()
+        ? "Only posts sent after bot addition are available via Bot API getUpdates."
+        : null
     };
   }
 
@@ -169,15 +196,17 @@ class TelegramCatalogService {
       });
 
       if (!Array.isArray(updates) || updates.length === 0) {
+        this.lastUpdatesCount = 0;
         break;
       }
 
       hasNewUpdates = true;
+      this.lastUpdatesCount = updates.length;
 
       for (const update of updates) {
         const message = this.#extractMessage(update);
         if (!message?.chat?.id) continue;
-        if (String(message.chat.id) !== this.chatId) continue;
+        if (!this.#isExpectedChat(message.chat)) continue;
 
         const media = this.#extractMedia(message);
         if (!media) continue;
@@ -200,6 +229,52 @@ class TelegramCatalogService {
 
     this.catalog.lastSyncedAt = new Date().toISOString();
     await this.#saveCatalog();
+  }
+
+  #isExpectedChat(chat) {
+    const chatId = String(chat?.id || "");
+    const chatUsername = normalizeChatHandle(chat?.username || "");
+
+    if (this.resolvedChatId && chatId === String(this.resolvedChatId)) {
+      return true;
+    }
+
+    if (this.expectedChatId && chatId === String(this.expectedChatId)) {
+      return true;
+    }
+
+    if (this.chatHandle && chatUsername && this.chatHandle === chatUsername) {
+      return true;
+    }
+
+    return false;
+  }
+
+  async #disableWebhookMode() {
+    try {
+      await this.#telegramCall("deleteWebhook", { drop_pending_updates: false });
+    } catch (error) {
+      console.warn("Telegram webhook mode check failed:", error.message);
+    }
+  }
+
+  async #resolveExpectedChatId() {
+    if (this.expectedChatId) {
+      this.resolvedChatId = String(this.expectedChatId);
+      return;
+    }
+
+    if (!this.chatHandle) return;
+
+    const chatRef = this.chatIdRaw.startsWith("@") ? this.chatIdRaw : `@${this.chatHandle}`;
+    try {
+      const chat = await this.#telegramCall("getChat", { chat_id: chatRef });
+      if (chat?.id) {
+        this.resolvedChatId = String(chat.id);
+      }
+    } catch (error) {
+      console.warn(`Could not resolve chat id for ${chatRef}:`, error.message);
+    }
   }
 
   #extractMessage(update) {

@@ -97,3 +97,16 @@ After frontend deploy, update backend `ALLOWED_ORIGINS` to your exact static-sit
 
 - If Telegram env vars are missing, backend serves demo videos so UI still works.
 - Telegram files are proxied from backend, so bot token is not exposed in frontend code.
+- `TELEGRAM_CHAT_ID` supports both numeric id (example `-1001234567890`) and handle (example `@mychannel`).
+- Bot API can only read posts after bot is added; older channel posts will not auto-import.
+
+## Telegram Troubleshooting
+
+1. Open `GET /api/videos/debug/status` on your backend URL.
+2. Check:
+   - `configured` is `true`
+   - `lastSyncError` is `null`
+   - `resolvedChatId` is set
+   - `totalVideos` is greater than `0` after posting a new video
+3. If `totalVideos` stays `0`, post a brand new video in channel and call `POST /api/videos/sync`.
+4. If `lastSyncError` mentions webhook conflict, redeploy backend (code now auto-disables webhook mode for polling).

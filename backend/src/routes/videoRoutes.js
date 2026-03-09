@@ -35,6 +35,13 @@ const createVideoRoutes = (catalogService) => {
     }
   });
 
+  router.get("/debug/status", (_req, res) => {
+    res.json({
+      ok: true,
+      ...catalogService.metadata()
+    });
+  });
+
   router.get("/:id", async (req, res, next) => {
     try {
       const payload = await catalogService.getWatchPayload(req.params.id);
